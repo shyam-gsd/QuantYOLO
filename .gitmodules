@@ -1,0 +1,4 @@
+[submodule "brevitas"]
+	path = brevitas
+	url = https://github.com/lecramdev/brevitas.git
+	branch = dev-cfc

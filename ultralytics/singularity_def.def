@@ -1,0 +1,17 @@
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+%setup
+    cp -R /home/shyam/PycharmProjects/QuantYOLO/ultralytics/ultralytics ${SINGULARITY_ROOTFS}
+%post
+    apt-get update && apt-get upgrade -y && apt-get install -y && apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 \
+    curl \
+    python3-pip
+    pip3 install dill torch torchvision torchaudio numpy scipy pandas pyparsing PyYAML requests urllib3 brevitas
+%files
+    test.py /home/project
+%environment
+    export PATH="/opt/conda/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/conda/lib:$LD_LIBRARY_PATH"
+    export PYTHONPATH="/opt/conda/lib/python3.8/site-packages:$PYTHONPATH"
+%runscript
+    python3 /home/project/main.py
