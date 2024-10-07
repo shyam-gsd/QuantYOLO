@@ -184,13 +184,14 @@ class Detect(nn.Module):
 #         self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
 #         self.no = nc + self.reg_max * 4  # number of outputs per anchor
 #         self.stride = torch.FloatTensor(stride)  # strides computed during build
-#         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else torch.nn.Identity()
+#         self.dfl = QuantDFL(self.reg_max) if self.reg_max > 1 else qnn.QuantIdentity()
 #
 #     def forward(self, x):
 #         """Concatenates and returns predicted bounding boxes and class probabilities."""
 #         if self.training:
 #             return x
 #         shape = x[0].shape  # BCHW
+#
 #         if self.dynamic or self.shape != shape:
 #             self.anchors, self.strides = (a.transpose(0, 1) for a in make_anchors(x, self.stride, 0.5))
 #             self.shape = shape
@@ -224,9 +225,9 @@ class QuantDetect(nn.Module):
         self.stride = torch.zeros(self.nl)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
         self.cv2 = nn.ModuleList(
-            nn.Sequential(QuantConv(x, c2, 3), QuantConv(c2, c2, 3), qnn.QuantConv2d(c2, 4 * self.reg_max, 1,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True,output_bit_width=18)) for x in ch
+            nn.Sequential(QuantConv(x, c2, 3), QuantConv(c2, c2, 3), qnn.QuantConv2d(c2, 4 * self.reg_max, 1,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True)) for x in ch
         )
-        self.cv3 = nn.ModuleList(nn.Sequential(QuantConv(x, c3, 3), QuantConv(c3, c3, 3), qnn.QuantConv2d(c3, self.nc, 1,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True,output_bit_width=18)) for x in ch)
+        self.cv3 = nn.ModuleList(nn.Sequential(QuantConv(x, c3, 3), QuantConv(c3, c3, 3), qnn.QuantConv2d(c3, self.nc, 1,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True)) for x in ch)
         self.dfl = QuantDFL(self.reg_max) if self.reg_max > 1 else qnn.QuantIdentity(act_quant=Int8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)
 
         if self.end2end:
@@ -242,7 +243,10 @@ class QuantDetect(nn.Module):
             x1 = self.cv2[i](x[i])
             x2 = self.cv3[i](x[i])
 
-            x[i] = QuantTensor.cat((x1,x2), 1)
+            x2 = qnn.QuantIdentity(bit_width= 18,return_quant_tensor=True)(x2.cpu()).to(x2.device)
+            x1 = qnn.QuantIdentity(bit_width=18, return_quant_tensor=True)(x1.cpu()).to(x1.device)
+
+            x[i] = torch.cat((x1,x2), 1)
         if self.training or isinstance(x[0], torch.fx.Proxy):  # Training path
             return x
         y = self._inference(x)
@@ -285,7 +289,7 @@ class QuantDetect(nn.Module):
             box = x_cat[:, : self.reg_max * 4]
             cls = x_cat[:, self.reg_max * 4 :]
         else:
-            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+            box, cls = x_cat.tensor.split((self.reg_max * 4, self.nc), 1)
 
         if self.export and self.format in {"tflite", "edgetpu"}:
             # Precompute normalization factor to increase numerical stability

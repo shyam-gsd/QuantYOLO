@@ -69,7 +69,7 @@ from .conv import (
     GhostConv,
     LightConv,
     RepConv,
-    SpatialAttention, QuantConv, QuantConcat, QuantUpsamplingNearest2d
+    SpatialAttention, QuantConv, QuantConcat, QuantUpsamplingNearest2d, QuantUnpackTensors
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, QuantDetect
 from .transformer import (
@@ -158,5 +158,6 @@ __all__ = (
     "Attention",
     "PSA",
     "SCDown",
+    "QuantUnpackTensors",
 
 )

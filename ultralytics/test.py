@@ -1,4 +1,4 @@
-from base_brevitas.src.brevitas.graph import calibration_mode, bias_correction_mode
+from brevitas.graph.calibrate import bias_correction_mode, calibration_mode
 from torchvision import transforms, datasets
 
 from tqdm import tqdm
@@ -30,12 +30,12 @@ def find_differences(dict1, dict2):
 
 
 # Build a YOLOv6n model from scratch
-floatModel = YOLO("runs/detect/train76/weights/best.pt")
+floatModel = YOLO("runs/detect/train92/weights/best.pt")
 
 
 quantModel = YOLO("newyolo_def.yaml")
-# quantModel.load("runs/detect/train76/weights/best.pt")
-quantModel.load_state_dict(floatModel.state_dict(),strict=False)
+quantModel.load("runs/detect/train92/weights/best.pt")
+# quantModel.load_state_dict(floatModel.state_dict())
 
 
 diffs = find_differences(floatModel.state_dict(), quantModel.state_dict())
@@ -56,29 +56,29 @@ quantModel.info()
 
 # Train the model on the COCO8 example dataset for 100 epochs
 
-# if torch.cuda.is_available():
-#     device = torch.device("cuda")
-# else:
-#     device = torch.device("cpu")
-# def get_dataloader(folder, size):
-#     # dataset = datasets.ImageFolder(folder, transforms.ToTensor())
-#     dataset = datasets.ImageFolder(folder, transforms.Compose([
-#         transforms.Resize(size),
-#         transforms.CenterCrop(size),
-#         transforms.ToTensor()
-#     ]))
-#     return torch.utils.data.DataLoader(dataset)
-# dataloader = get_dataloader("ultralytics/images", 320)
-# with torch.no_grad():
-#     print("Calibrate:")
-#     with calibration_mode(quantModel):
-#         for x, _ in tqdm(dataloader):
-#             x = quantModel(x.to(device))
-#
-#     print("Bias Correction:")
-#     with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
-#         for x, _ in tqdm(dataloader):
-#             x = quantModel(x.to(device))
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+def get_dataloader(folder, size):
+    # dataset = datasets.ImageFolder(folder, transforms.ToTensor())
+    dataset = datasets.ImageFolder(folder, transforms.Compose([
+        transforms.Resize(size),
+        transforms.CenterCrop(size),
+        transforms.ToTensor()
+    ]))
+    return torch.utils.data.DataLoader(dataset)
+dataloader = get_dataloader("ultralytics/images", 320)
+with torch.no_grad():
+    print("Calibrate:")
+    with calibration_mode(quantModel):
+        for x, _ in tqdm(dataloader):
+            x = quantModel(x.to(device))
+
+    print("Bias Correction:")
+    with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
+        for x, _ in tqdm(dataloader):
+            x = quantModel(x.to(device))
 
 
 results = quantModel.train(data="data.yaml",  imgsz=320,  save=False)

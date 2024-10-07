@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+
 import brevitas.nn as qnn
 from brevitas.nn import QuantConvTranspose2d
 from ultralytics.nn.modules import (
@@ -38,6 +39,7 @@ from ultralytics.nn.modules import (
     Conv2,
     QuantConv,
     QuantConcat,
+    QuantUnpackTensors,
     QuantUpsamplingNearest2d,
     ConvTranspose,
     QuantConvTranspose,
@@ -931,7 +933,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             Classify,
             Conv,
             QuantConv,
-
+            QuantUnpackTensors,
             QuantConvTranspose2d,
             ConvTranspose,
             QuantConvTranspose,

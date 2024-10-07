@@ -33,6 +33,7 @@ __all__ = (
     "QuantConv",
     "QuantConcat",
     "QuantUpsamplingNearest2d",
+    "QuantUnpackTensors",
 
 )
 
@@ -40,7 +41,7 @@ from brevitas import config
 from brevitas.core.function_wrapper import CeilSte
 from brevitas.inject.enum import RestrictValueType
 
-from brevitas.quant_tensor import QuantTensor
+from brevitas.quant_tensor import QuantTensor, _unpack_quant_tensor
 
 from torch import Tensor
 
@@ -120,6 +121,15 @@ class Conv2(Conv):
         self.forward = self.forward_fuse
 
 
+class QuantUnpackTensors(torch.nn.Module):
+    def __init__(self,*args,**kwargs) -> None:
+        super().__init__()
+
+    def forward(self, x):
+        x = _unpack_quant_tensor(x)
+        # print(x[0][0,:,0,0])
+        return x
+
 class QuantConv(nn.Module):
 
     """Simplified RepConv module with Conv fusing."""
@@ -129,7 +139,7 @@ class QuantConv(nn.Module):
         """Initialize Conv layer with given arguments including activation."""
         super().__init__()
         self.conv = qnn.QuantConv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False,weight_quant=Int8WeightPerChannelPoT, weight_bit_width=6, return_quant_tensor=True)
-        self.bn = qnn.BatchNorm2dToQuantScaleBias(c2)
+        self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(act_quant=Int8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)
 
     def forward(self, x):
@@ -205,7 +215,7 @@ class QuantConvTranspose(nn.Module):
         """Initialize ConvTranspose2d layer with batch normalization and activation function."""
         super().__init__()
         self.conv_transpose = qnn.QuantConvTranspose2d(c1, c2, k, s, p, bias=not bn,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True)
-        self.bn = qnn.BatchNorm2dToQuantScaleBias(c2) if bn else qnn.QuantIdentity(act_quant=Int8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)
+        self.bn = nn.BatchNorm2d(c2) if bn else qnn.QuantIdentity(act_quant=Int8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(act_quant=Int8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)
 
     def forward(self, x):
