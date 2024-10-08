@@ -65,6 +65,7 @@ pandas==2.2.2
 pillow==10.4.0
 protobuf==4.25.4
 psutil==6.0.0
+py-cpuinfo==9.0.0
 pyasn1==0.6.0
 pycocotools==2.0.8
 Pygments==2.18.0

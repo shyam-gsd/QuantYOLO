@@ -306,7 +306,7 @@ class Tuner():
     def trainTask(self):
         
         try:
-            self.model.train(data = self.data,epochs= self.epochs,lr0=0.0000001,save= True,device=[0],cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
+            self.model.train(data = self.data,epochs= self.epochs,lr0=0.0000001,save= True,device='cpu',cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
         except KeyboardInterrupt:
             self.plot_res()
         except Exception as e:
