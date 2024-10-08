@@ -1,3 +1,8 @@
+import sys
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
+
 from tqdm import tqdm
 
 from ultralytics import YOLO
@@ -157,6 +162,7 @@ class Tuner():
     def update_best_model_path(self):
         dir_runs = Path("runs/detect/")
         fols = sorted([f for f in dir_runs.iterdir() if f.is_dir() and f.name.startswith("train")])
+
         best_map = 0.0
         for f in fols:
             try:
@@ -216,7 +222,8 @@ class Tuner():
             hyp[k] = round(hyp[k], 5)  # significant digits
 
         # fix batch size make it int
-        hyp["batch"] = 64 #int(hyp["batch"])
+        hyp["batch"] = 16 #int(hyp["batch"])
+
 
         self.hyp = hyp
 
@@ -299,7 +306,7 @@ class Tuner():
     def trainTask(self):
         
         try:
-            self.model.train(data = self.data,epochs= self.epochs,save= True,device=[0],cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
+            self.model.train(data = self.data,epochs= self.epochs,lr0=0.0000001,save= True,device=[0],cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
         except KeyboardInterrupt:
             self.plot_res()
         except Exception as e:
@@ -466,20 +473,22 @@ if __name__ == '__main__':
     quantModel = YOLO("newyolo_def.yaml")
     quantModel.load(tuner.best_model_path)
 
-    dataloader = get_dataloader("ultralytics/images", 320)
-    with torch.no_grad():
-        print("Calibrate:")
-        with calibration_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
+    print(quantModel.info())
 
-        print("Bias Correction:")
-        with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
+    # dataloader = get_dataloader("ultralytics/images", 320)
+    # with torch.no_grad():
+    #     print("Calibrate:")
+    #     with calibration_mode(quantModel):
+    #         for x, _ in tqdm(dataloader):
+    #             x = quantModel(x.to(device))
+    #
+    #     print("Bias Correction:")
+    #     with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
+    #         for x, _ in tqdm(dataloader):
+    #             x = quantModel(x.to(device))
 
 
-    tuner.InitTrain(quantModel,data='data.yaml',epochs=1000,patience=10,imgsz=320)
+    tuner.InitTrain(quantModel,data='coco128.yaml',epochs=1000,patience=10,imgsz=320)
 
     #start training
     tuner.StartTrain()

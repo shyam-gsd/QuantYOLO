@@ -1,0 +1,9 @@
+hypothesis
+mock
+psutil
+pytest
+pytest-mock
+pytest-xdist
+pytest_cases
+scipy
+torchvision

@@ -1,0 +1,11 @@
+inflect
+librosa
+numba
+pillow>=4.3.0
+requests
+ruamel.yaml
+soundfile
+sox
+torch-stft
+tqdm
+unidecode
