@@ -174,3 +174,5 @@ runs/
 ultralytics/runs/
 
 *.sif
+
+FloatingPointTuning/
