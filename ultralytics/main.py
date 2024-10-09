@@ -2,7 +2,7 @@ import sys
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
-
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas')
 from tqdm import tqdm
 
 from ultralytics import YOLO
@@ -20,6 +20,7 @@ import os
 import json
 import math
 import torch
+import traceback
 from torchvision import transforms, datasets
 from brevitas.graph.calibrate import bias_correction_mode, calibration_mode
 import gc
@@ -292,6 +293,8 @@ class Tuner():
             gc.collect()  # Collect garbage
             if self.meta.project == "FloatingPointTuning":
                 self.update_best_model_path()
+            else:
+                self.best_model_path = "newyolo_def.yaml"
             self.model = YOLO(self.best_model_path)
             self.model.add_callback("on_train_epoch_end",self.onTrainEpochComplete)
             self.model.add_callback("on_model_save",self.onModelSaved)
@@ -304,13 +307,13 @@ class Tuner():
     Main train task, this function is run inside thread. it starts the training process
     '''
     def trainTask(self):
-        
         try:
-            self.model.train(data = self.data,epochs= self.epochs,lr0=0.0000001,save= True,device='cpu',cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
+            self.model.train(data = self.data,epochs= self.epochs,lr0=0.00001,save= True,device=[0],cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
         except KeyboardInterrupt:
             self.plot_res()
         except Exception as e:
             print("Training was cancelled. "+str(e))
+            traceback.print_exc()
             
 
 
@@ -450,7 +453,7 @@ def get_dataloader(folder, size):
     return torch.utils.data.DataLoader(dataset)
 if __name__ == '__main__':
     # meta data to be updated as per experiment
-    meta = {"data":"coco.yaml", "model":"runs/detect/train74/weights/best.pt", "epochs":1000,"patience":10,"cool_period":10, "target_metrics":"fitness","best_model":"train46", "highest_train_epochs" : 1000, "imgsz":320,"optimizer":"SGD","project":"FloatingPointTuning"}
+    meta = {"data":"coco.yaml", "model":"runs/detect/train74/weights/best.pt", "epochs":1000,"patience":10,"cool_period":10, "target_metrics":"fitness","best_model":"train46", "highest_train_epochs" : 1000, "imgsz":320,"optimizer":"SGD","project":"Quantization"}
 
     # defining model
     
@@ -472,6 +475,7 @@ if __name__ == '__main__':
 
     quantModel = YOLO("newyolo_def.yaml")
     quantModel.load(tuner.best_model_path)
+
 
     print(quantModel.info())
 
