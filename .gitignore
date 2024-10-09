@@ -176,3 +176,4 @@ ultralytics/runs/
 *.sif
 
 FloatingPointTuning/
+Quantization/
