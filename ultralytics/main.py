@@ -2,7 +2,7 @@ import sys
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas')
+
 from tqdm import tqdm
 
 from ultralytics import YOLO
@@ -490,7 +490,7 @@ if __name__ == '__main__':
                 x = quantModel(x.to(device))
 
 
-    tuner.InitTrain(quantModel,data='coco128.yaml',epochs=1000,patience=10,imgsz=320)
+    tuner.InitTrain(quantModel,data='coco.yaml',epochs=1000,patience=10,imgsz=320)
 
     #start training
     tuner.StartTrain()
