@@ -9,6 +9,7 @@ import torch.nn as nn
 
 import brevitas.nn as qnn
 from brevitas.nn import QuantConvTranspose2d
+
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -63,8 +64,7 @@ from ultralytics.nn.modules import (
     SCDown,
     Segment,
     WorldDetect,
-    v10Detect
-
+    v10Detect, PostQuantDetect, NewQuantDetect
 
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
@@ -965,6 +965,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PSA,
             SCDown,
             C2fCIB,
+
+            PostQuantDetect
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -995,7 +997,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c2 = sum(ch[x] for x in f)
         elif m is QuantConcat:
             c2 = sum(ch[x] for x in f)
-        elif m in {Detect,QuantDetect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}:
+        elif m is nn.Identity:
+            c2 = sum(ch[x] for x in f)
+        elif m in {Detect,QuantDetect, NewQuantDetect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}:
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)

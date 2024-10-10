@@ -53,6 +53,7 @@ head:
   - [[-1, 10], 1, QuantConcat, [1]]  # cat head P5
   - [-1, 1, QuantConv, [512, 3, 1]]
   - [-1, 9, QuantConv, [512, 3, 1]]  # 27
-  - [-1,1, QuantUnpackTensors, [0]]  # 28
-  - [[19, 23, 27], 1, QuantDetect, [nc]]  # Detect(P3, P4, P5)
+  - [[19, 23, 27], 1, NewQuantDetect, [nc]]  # Detect(P3, P4, P5)
+#  - [-1,1, QuantUnpackTensors, [0]]  # 28
+#  - [-1,1, PostQuantDetect, [nc]]  # 29
   # - [[4], 1, Detect, [nc]]  # Detect(P3, P4, P5)

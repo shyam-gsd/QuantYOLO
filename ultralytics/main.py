@@ -477,19 +477,17 @@ if __name__ == '__main__':
     quantModel.load(tuner.best_model_path)
 
 
-    print(quantModel.info())
+    dataloader = get_dataloader("ultralytics/images", 320)
+    with torch.no_grad():
+        print("Calibrate:")
+        with calibration_mode(quantModel):
+            for x, _ in tqdm(dataloader):
+                x = quantModel(x.to(device))
 
-    # dataloader = get_dataloader("ultralytics/images", 320)
-    # with torch.no_grad():
-    #     print("Calibrate:")
-    #     with calibration_mode(quantModel):
-    #         for x, _ in tqdm(dataloader):
-    #             x = quantModel(x.to(device))
-    #
-    #     print("Bias Correction:")
-    #     with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
-    #         for x, _ in tqdm(dataloader):
-    #             x = quantModel(x.to(device))
+        print("Bias Correction:")
+        with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
+            for x, _ in tqdm(dataloader):
+                x = quantModel(x.to(device))
 
 
     tuner.InitTrain(quantModel,data='coco128.yaml',epochs=1000,patience=10,imgsz=320)
