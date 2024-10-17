@@ -69,7 +69,7 @@ from .conv import (
     GhostConv,
     LightConv,
     RepConv,
-    SpatialAttention, QuantConv, QuantConcat, QuantUpsamplingNearest2d, QuantUnpackTensors
+    SpatialAttention, QuantConv, QuantConcat, QuantUpsamplingNearest2d, QuantUnpackTensors,Uint8ActPerTensorPoT,Int8ActPerTensorPoT,Int8WeightPerChannelPoT
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, QuantDetect, \
     PostQuantDetect, NewQuantDetect
@@ -162,5 +162,8 @@ __all__ = (
     "QuantUnpackTensors",
     "PostQuantDetect",
     "NewQuantDetect",
+    "Uint8ActPerTensorPoT",
+    "Int8ActPerTensorPoT",
+    "Int8WeightPerChannelPoT",
 
 )

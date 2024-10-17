@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, QuantConv, Int8ActPerTensorPoT, \
-    Int8WeightPerChannelPoT
+    Int8WeightPerChannelPoT, Uint8ActPerTensorPoT
 from .transformer import TransformerBlock
 import brevitas.nn as qnn
 
@@ -83,10 +83,14 @@ class QuantDFL(nn.Module):
     Proposed in Generalized Focal Loss https://ieeexplore.ieee.org/document/9792391
     """
 
-    def __init__(self, c1=16):
+    def __init__(self, c1=16,**kwargs):
         """Initialize a convolutional layer with a given number of input channels."""
         super().__init__()
-        self.conv = qnn.QuantConv2d(c1, 1, 1, bias=False,weight_quant=Int8WeightPerChannelPoT,weight_bit_width= 6,return_quant_tensor=True).requires_grad_(False)
+        self.bit_width = kwargs.get('bit_width', 6)
+        self.weight_quant = kwargs['weight_quant']
+        self.weight_bit_width = kwargs.get('weight_bit_width', 6)
+        self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
+        self.conv = qnn.QuantConv2d(c1, 1, 1, bias=False,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor).requires_grad_(False)
         x = torch.arange(c1, dtype=torch.float)
         #x = torch.quantize_per_tensor(c1,scale=0,1, zero_point=0, dtype=torch.quint8)
         self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
@@ -217,16 +221,19 @@ class QuantSPPF(nn.Module):
 
     """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher."""
 
-    def __init__(self, c1, c2, k=5):
+    def __init__(self, c1, c2, k=5, **kwargs):
         """
         Initializes the SPPF layer with given input/output channels and kernel size.
 
         This module is equivalent to SPP(k=(5, 9, 13)).
         """
+
         super().__init__()
+
+
         c_ = c1 // 2  # hidden channels
-        self.cv1 = QuantConv(c1, c_, 1, 1)
-        self.cv2 = QuantConv(c_ * 4, c2, 1, 1)
+        self.cv1 = QuantConv(c1, c_, 1, 1, **kwargs)
+        self.cv2 = QuantConv(c_ * 4, c2, 1, 1, **kwargs)
         self.m = qnn.QuantMaxPool2d(kernel_size=k, stride=1, padding=k // 2, return_quant_tensor=True)
 
     def forward(self, x):

@@ -1,15 +1,23 @@
 import sys
+
+from tqdm import tqdm
+
+from graph.quantize import preprocess_for_quantize, align_input_quant
+from graph.quantize_impl import residual_handler
+from ultralytics.models.yolo.detect import DetectionTrainer
+from ultralytics.nn import tasks
+from ultralytics.nn.modules import Int8WeightPerChannelPoT, Uint8ActPerTensorPoT, Int8ActPerTensorPoT, PostQuantDetect, \
+    QuantUnpackTensors
+
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
 
-from tqdm import tqdm
-
 from ultralytics import YOLO
-from ultralytics.cfg import get_cfg, get_save_dir
-from ultralytics.utils import DEFAULT_CFG,LOGGER,colorstr
+from ultralytics.cfg import get_cfg
+from ultralytics.utils import DEFAULT_CFG, colorstr, RANK
 import numpy as np
-import random 
+import random
 from pathlib import Path
 import time
 import threading
@@ -25,6 +33,9 @@ from torchvision import transforms, datasets
 from brevitas.graph.calibrate import bias_correction_mode, calibration_mode
 import gc
 
+import torch.nn as nn
+import brevitas.nn as qnn
+
 '''
 Function to Check if the array of numbers has a plateau
 
@@ -33,13 +44,15 @@ Args:
     window_size : total number of elements that are to be averaged 
     tolerance : if the smoothened curve remains in this range for 3 consiquetive times then it is a plateau
 '''
+
+
 def has_plateau(arr, window_size=3, tolerance=0.1):
     if len(arr) < 3:  # If the array has fewer than 3 elements, it can't have a plateau
         return False
 
     # Calculate the moving average
     smoothed_arr = gaussian_filter1d(arr, sigma=6)
-    
+
     counter = 1  # Initialize a counter for the current sequence length
     for i in range(1, len(smoothed_arr)):
         if abs(smoothed_arr[i] - smoothed_arr[i - 1]) <= tolerance:  # Check if difference is within the tolerance
@@ -48,20 +61,97 @@ def has_plateau(arr, window_size=3, tolerance=0.1):
                 return True
         else:
             counter = 1  # Reset the counter if the sequence breaks
-    
+
     return False  # Return False if no plateau is found
 
 
 class ModelOnPlateau(Exception):
     pass
 
+
+class MyModel(tasks.DetectionModel):
+    def __init__(self, cfg='yolov8n.yaml', ch=3, nc=None, verbose=True):
+        super().__init__(cfg, ch, nc, verbose)
+    # def __init__(self, cfg, mode="detect"):
+    #     super().__init__(cfg, mode)
+
+    def calibrate(self):
+        dataloader = get_dataloader("images", 320)
+
+        quantized = self.model.model[0]
+        quantized_detect = self.model.model[1]
+        with torch.no_grad():
+            print("Calibrate:")
+            with calibration_mode(quantized.m), calibration_mode(quantized_detect.m):
+                for x, _ in tqdm(dataloader):
+                    x = quantized(x.to(device))
+                    quantized_detect(x)
+
+            print("Bias Correction:")
+            with bias_correction_mode(quantized.m), bias_correction_mode(quantized_detect.m):
+                for x, _ in tqdm(dataloader):
+                    x = quantized(x.to(device))
+                    quantized_detect(x)
+
+    def Quantize(self):
+        model_arch = self.model
+        detect = model_arch.pop(len(self.model) - 1)
+        new_layer = torch.nn.Identity()
+        new_layer.i = detect.i
+        new_layer.f = detect.f
+
+        print(self.model)
+        quantModel.model = model_arch
+        print(self)
+        wrap = QuantizeWrapper(self)
+        pre_quant = preprocess_for_quantize(wrap)
+        pre_detect = preprocess_for_quantize(detect)
+
+        quant = residual_handler(pre_quant, identity_map, act_map, unsigned_act, align_input_quant)
+        detect = residual_handler(pre_detect, identity_map, act_map, unsigned_act, align_input_quant)
+
+        post_detect = PostQuantDetect(nc=detect.nc, stride=detect.stride)
+
+        self.model = torch.nn.Sequential(quant, detect, QuantUnpackTensors(), post_detect)
+        for i, m in enumerate(self.model):
+            m.i = i
+            m.f = -1
+        self.save = []
+        self.calibrate()
+
+        return self
+
+
+def get_model(cfg=None, weights=None, nc=20, verbose=True):
+    if cfg is str:
+        model = MyModel(cfg)
+    else:
+        model = MyModel(cfg["yaml_file"])
+    if weights:
+        model.load(weights)
+    else:
+        model.load(torch.load("runs/detect/train92/weights/best.pt", map_location=device))
+
+    model.Quantize()
+    return model
+
+
+class MyTrainer(DetectionTrainer):
+    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+        super().__init__(cfg, overrides, _callbacks)
+
+    def calibrate(self):
+        self.model.calibrate()
+
+    def get_model(self, cfg=None, weights=None, verbose=True):
+        return get_model(cfg, weights, self.data["nc"], verbose and RANK == -1)
+
 class Tuner():
-    
     '''
         __init__ and _mutate fucntions are directly taken from ultralytics
     '''
 
-    def __init__(self,meta,args=DEFAULT_CFG,**kwargs):
+    def __init__(self, meta, args=DEFAULT_CFG, **kwargs):
         """
         Initialize the Tuner with configurations.
 
@@ -93,49 +183,45 @@ class Tuner():
             "mosaic": (0.05, 1.0),  # image mixup (probability)
             "mixup": (0.05, 1.0),  # image mixup (probability)
             "copy_paste": (0.05, 1.0),  # segment copy-paste (probability)
-            "batch" : (16,128,16)
+            "batch": (16, 128, 16)
         }
         self.args = get_cfg(overrides=kwargs)
-        self.tune_csv = Path("tune.csv") # file to store hyperparameters data, it stores all the hyps and the best fitness value recieved till the model went to plateau during training
-        self.hyp_file = Path("hyp.yaml") # file to store hyperparameters
+        self.tune_csv = Path(
+            "tune.csv")  # file to store hyperparameters data, it stores all the hyps and the best fitness value recieved till the model went to plateau during training
+        self.hyp_file = Path("hyp.yaml")  # file to store hyperparameters
         self.prefix = colorstr("Tuner: ")
-        
+
         # Custom Parameters
-        
-        self.patience = 5 # patience : number of epochs to wait before updating hyperparameters
-        self.patience_tolerence = 0.001 # tolerence : if the target metric remains in this range it will be considered plateau
-        self.patience_window_size = 3 # window_siye : total number of elements to be averaged 
 
-        
-        self.hyp = dict() # current hyperparameters
+        self.patience = 5  # patience : number of epochs to wait before updating hyperparameters
+        self.patience_tolerence = 0.001  # tolerence : if the target metric remains in this range it will be considered plateau
+        self.patience_window_size = 3  # window_siye : total number of elements to be averaged
 
-        self.process_id = None # current train thread
-        self.model = None # currrent running model
-        self.data = '' # data to be trained on 
-        
-        
-        self.metrics_per_epoch = pd.DataFrame() # dataframe that keeps the record of metrics after each training epoch
-        self.best_metric = dict() # holds best metrics
+        self.hyp = dict()  # current hyperparameters
+
+        self.process_id = None  # current train thread
+        self.model = None  # currrent running model
+        self.data = ''  # data to be trained on
+
+        self.metrics_per_epoch = pd.DataFrame()  # dataframe that keeps the record of metrics after each training epoch
+        self.best_metric = dict()  # holds best metrics
 
         '''
          number of epochs to wait before checking for plateau, 
          I used this in case the model does not directly start showing improvement when the training starts
          As we are updating hyperparameters in between
         '''
-        self.cool_period = 10 
-        
-        
+        self.cool_period = 10
 
         self.exp_dir = "./experiments"
         self.target_metric = 'fitness'
-        
-        self.pat_cnt = 5 # counter to keep track of patience number
-        self.epoch_cnt = 0 # total number of epochs the model trained ignoring the change in hyperparameters
-        self.current_exp_epoch_cnt = 0 # counter to keep track of epochs after changing hyperparameters
+
+        self.pat_cnt = 5  # counter to keep track of patience number
+        self.epoch_cnt = 0  # total number of epochs the model trained ignoring the change in hyperparameters
+        self.current_exp_epoch_cnt = 0  # counter to keep track of epochs after changing hyperparameters
         self.hyp_update_count = 0
-        self.is_current_hyp_stale = False # this is bool to stop the current train process and update the hyperparameters
+        self.is_current_hyp_stale = False  # this is bool to stop the current train process and update the hyperparameters
         self.best_model_path = None
-        
 
         '''
         Following code creates necessary files to manage and save results  and metadata       
@@ -143,22 +229,18 @@ class Tuner():
         if not os.path.exists(self.exp_dir):
             os.makedirs(self.exp_dir)
         self.exp_run = 0
-        
+
         for dir in os.listdir(self.exp_dir):
-            name,exp = dir.split("_")
+            name, exp = dir.split("_")
             self.exp_run += 1
-        
-        self.exp_path = self.exp_dir+"/exp_"+str(self.exp_run)+"/"
-        print("experiment path.. "+self.exp_path)
+
+        self.exp_path = self.exp_dir + "/exp_" + str(self.exp_run) + "/"
+        print("experiment path.. " + self.exp_path)
         os.makedirs(self.exp_path)
 
         self.thread = None
 
         self.meta = meta
-
-        
-        
-
 
     def update_best_model_path(self):
         dir_runs = Path("runs/detect/")
@@ -169,15 +251,14 @@ class Tuner():
             try:
                 csv = pd.read_csv(f / "results.csv", sep=",")
                 map = csv["    metrics/mAP50-95(B)"].max()
-                if map > best_map:                    
+                if map > best_map:
                     if Path(f / "weights/best.pt").exists():
                         best_map = map
                         self.best_model_path = f / "weights/best.pt"
             except:
                 pass
-        print("updated path to "+str(self.best_model_path))
-        
-    
+        print("updated path to " + str(self.best_model_path))
+
     def _mutate(self, parent="single", n=5, mutation=0.8, sigma=0.2):
         """
         Mutates the hyperparameters based on bounds and scaling factors specified in `self.space`.
@@ -223,8 +304,7 @@ class Tuner():
             hyp[k] = round(hyp[k], 5)  # significant digits
 
         # fix batch size make it int
-        hyp["batch"] = 16 #int(hyp["batch"])
-
+        hyp["batch"] = 16  #int(hyp["batch"])
 
         self.hyp = hyp
 
@@ -234,28 +314,25 @@ class Tuner():
         self.hyp_update_count += 1
         return hyp
 
-
-    
-
     '''
     initializes for first time the parameters
     this function  runs only 1 time before starting training
     '''
-    def InitTrain(self,model,data,epochs,patience,imgsz,optim="SGD"):
-        
+
+    def InitTrain(self, model, data, epochs, patience, imgsz, optim="SGD"):
+
         self.patience = patience
         self.pat_cnt = patience
         self.model = model
         self.data = data
         self.epochs = epochs
         self.imgsz = imgsz
-        self.model.add_callback("on_train_epoch_end",self.onTrainEpochComplete)
-        self.model.add_callback("on_model_save",self.onModelSaved)
+        self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
+        self.model.add_callback("on_model_save", self.onModelSaved)
         self.optim = optim
-        
-        
+
         self.epoch_cnt = 0
-        
+
         hyp = self._mutate()
         self.meta.data = data
         self.meta.model = model.model_name
@@ -267,26 +344,25 @@ class Tuner():
         self.meta.target_metrics = self.target_metric
         self.meta.best_model = self.best_model_path
         self.meta.highest_train_epochs = self.epoch_cnt
-        
-        
-    
+
     '''
     this function starts the train loop,
     It spawns a thread and also an event to stop the training when required
     '''
-    def StartTrain(self):        
+
+    def StartTrain(self):
         print("starting ")
         self.current_exp_epoch_cnt = 0
         del self.thread
         self.thread = threading.Thread(target=self.trainTask)
-        
+
         self.thread.start()
         print("started")
         self.thread.join()
 
-        if(self.current_exp_epoch_cnt < self.epochs):
+        if (self.current_exp_epoch_cnt < self.epochs):
             mutated_hyp = self._mutate()
-            
+
             #self.thread = None
 
             self.model = None
@@ -296,80 +372,75 @@ class Tuner():
             else:
                 self.best_model_path = "newyolo_def.yaml"
             self.model = YOLO(self.best_model_path)
-            self.model.add_callback("on_train_epoch_end",self.onTrainEpochComplete)
-            self.model.add_callback("on_model_save",self.onModelSaved)
+            self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
+            self.model.add_callback("on_model_save", self.onModelSaved)
             self.is_current_hyp_stale = False
             self.StartTrain()
         #model.train(data=data,epochs=epochs, plots=True, save=True, cfg=self.hyp_file,val=True, resume=True)
 
-
     '''
     Main train task, this function is run inside thread. it starts the training process
     '''
+
     def trainTask(self):
         try:
-            self.model.train(data = self.data,epochs= self.epochs,lr0=0.00001,save= True,device=[0],cfg=self.hyp_file,val= True, imgsz= self.imgsz, optimizer=self.optim,project=self.meta.project)
+            self.model.train(data=self.data, epochs=self.epochs, lr0=0.00001, save=True, device=[0], cfg=self.hyp_file,
+                             trainer=MyTrainer, val=True, imgsz=self.imgsz, optimizer=self.optim,
+                             project=self.meta.project)
         except KeyboardInterrupt:
             self.plot_res()
         except Exception as e:
-            print("Training was cancelled. "+str(e))
+            print("Training was cancelled. " + str(e))
             traceback.print_exc()
-            
 
-
-    
-
-    def onModelSaved(self,trainer):
+    def onModelSaved(self, trainer):
         # updates hyperparameters and starts training loop
-        if(self.is_current_hyp_stale):
+        if (self.is_current_hyp_stale):
             raise ModelOnPlateau("Model reached a plateau")
-            
-            
-
 
     '''
     This function is called after each training epoch is completed
     If the model reaches plateau it stops the thread, updates the hyperparameters and then starts training process again. 
     '''
-    def onTrainEpochComplete(self,trainer):
+
+    def onTrainEpochComplete(self, trainer):
         #increment necessary counters
         self.epoch_cnt += 1
         self.current_exp_epoch_cnt += 1
-        
+
         self.meta.highest_train_epochs = self.epoch_cnt
         # I skipped the first iteration as it was producing unecessary spike in the plot, because all metrics are 0 at the start of training. 
-        if(self.current_exp_epoch_cnt <= 1):
+        if (self.current_exp_epoch_cnt <= 1):
             return
-        
 
         # fetch metrics from trainer and save best metrics 
         metrics_data = trainer.metrics
         metrics_data["fitness"] = trainer.fitness if trainer.fitness else 0
-        
-        self.metrics_per_epoch = pd.concat([self.metrics_per_epoch, pd.DataFrame([metrics_data])],ignore_index=True)
-        
+
+        self.metrics_per_epoch = pd.concat([self.metrics_per_epoch, pd.DataFrame([metrics_data])], ignore_index=True)
 
         target_metric_list = self.metrics_per_epoch[self.target_metric].to_list()
 
-        if(metrics_data[self.target_metric] >= max(target_metric_list)):
+        if (metrics_data[self.target_metric] >= max(target_metric_list)):
             #self.model.save(self.exp_path+"best.pt")
             id = self.metrics_per_epoch[self.target_metric].idxmax()
             self.best_metric = self.metrics_per_epoch.iloc[id].to_dict()
-        
 
         # waits for cooling period and then checks for plateau
 
         mutated_hyp = self.hyp
-        if(self.current_exp_epoch_cnt > self.cool_period):
-            if(has_plateau(target_metric_list[:-(self.patience +self.cool_period)],self.patience_window_size,self.patience_tolerence)): # check only for the last 10 or self.cooling_period + self.patience of data to check if it has plateau
+        if (self.current_exp_epoch_cnt > self.cool_period):
+            if (has_plateau(target_metric_list[:-(self.patience + self.cool_period)], self.patience_window_size,
+                            self.patience_tolerence)):  # check only for the last 10 or self.cooling_period + self.patience of data to check if it has plateau
                 self.pat_cnt -= 1
-                if(self.pat_cnt <= 0):
-
+                if (self.pat_cnt <= 0):
                     # saves the hyperparameters and best metrics to tune.csv
                     best_fitness = self.best_metric["fitness"]
-                    
-                    log_row = [round(best_fitness, 5)] + [mutated_hyp[k] for k in self.space.keys()] + list(self.best_metric.values())
-                    headers = "" if self.tune_csv.exists() else (",".join(["fitness"] + list(self.space.keys()) + list(self.best_metric.keys())) + "\n")
+
+                    log_row = [round(best_fitness, 5)] + [mutated_hyp[k] for k in self.space.keys()] + list(
+                        self.best_metric.values())
+                    headers = "" if self.tune_csv.exists() else (
+                            ",".join(["fitness"] + list(self.space.keys()) + list(self.best_metric.keys())) + "\n")
                     with open(self.tune_csv, "a") as f:
                         f.write(headers + ",".join(map(str, log_row)) + "\n")
                     self.pat_cnt = self.patience
@@ -378,60 +449,103 @@ class Tuner():
                     # sets the bool for the to stop current train loop
                     self.best_model_path = trainer.best if trainer.best else trainer.last
                     self.is_current_hyp_stale = True
-                    
+
             else:
                 self.pat_cnt = self.patience
-                    
 
         # for k in trainer.args:
         #     if(k[0] == 'lr0'):
         #         LOGGER.info(k)
 
-        
-
-
     '''
     plots the training progress to graph
     '''
+
     def plot_res(self):
         df = pd.DataFrame(self.metrics_per_epoch)
         num_columns = df.shape[1]
         # Determine the number of rows needed for an Lx4 grid
         L = math.ceil(num_columns / 4)
-        
+
         fig, axes = plt.subplots(L, 4, figsize=(20, 5 * L))
-        
+
         # Flatten axes for easy iteration
         axes = axes.flatten()
-        
+
         x = np.arange(df.shape[0])
-        
+
         for idx, column in enumerate(df.columns):
             axes[idx].plot(x, df[column], label=f'{column} data')
             smooth_data = gaussian_filter1d(df[column], sigma=2)
             axes[idx].plot(x, smooth_data, label=f'{column} smoothed', linestyle='--')
-            
+
             axes[idx].set_title(f'{column}')
             axes[idx].set_xlabel('Epoch')
             axes[idx].set_ylabel(column)
             axes[idx].legend()
-        
+
         # Hide any unused subplots
         for i in range(num_columns, len(axes)):
             fig.delaxes(axes[i])
-        
+
         plt.tight_layout()
-        plt.savefig(self.exp_path+"exp_plot_"+str(self.exp_run)+'_'+str(self.epoch_cnt)+".png")
-        
-        with open(self.exp_path+"meta.json", "w") as json_file:
+        plt.savefig(self.exp_path + "exp_plot_" + str(self.exp_run) + '_' + str(self.epoch_cnt) + ".png")
+
+        with open(self.exp_path + "meta.json", "w") as json_file:
             json.dump(self.meta, json_file, indent=4)
-        
-    
-    
-        
+
+
+ACT_BIT_WIDTH = 6
+WEIGHT_BIT_WIDTH = 6
+compute_map = {
+    nn.Conv2d: (
+        qnn.QuantConv2d,
+        {
+            'weight_quant': Int8WeightPerChannelPoT,
+            'weight_bit_width': WEIGHT_BIT_WIDTH,
+            # 'bias_quant': quant.Int32Bias,
+            'return_quant_tensor': True}),
+    nn.ConvTranspose2d: (
+        qnn.QuantConvTranspose2d,
+        {
+            'weight_quant': Int8WeightPerChannelPoT,
+            'weight_bit_width': WEIGHT_BIT_WIDTH,
+            # 'bias_quant': quant.Int32Bias,
+            'return_quant_tensor': True}),
+    nn.UpsamplingNearest2d: (
+        qnn.QuantUpsamplingNearest2d,
+        {})}
+unsigned_act = (nn.ReLU,)
+act_map = {
+    nn.ReLU: (qnn.QuantReLU, {
+        'act_quant': Uint8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True})}
+identity_map = {
+    'signed':
+        (qnn.QuantIdentity, {
+            'act_quant': Int8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True}),
+    'signed8':
+        (qnn.QuantIdentity, {
+            'act_quant': Int8ActPerTensorPoT, 'bit_width': 8, 'return_quant_tensor': True}),
+    'unsigned':
+        (qnn.QuantIdentity, {
+            'act_quant': Uint8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True}),
+    'unsigned8':
+        (qnn.QuantIdentity, {
+            'act_quant': Uint8ActPerTensorPoT, 'bit_width': 8, 'return_quant_tensor': True})}
+
+
+class QuantizeWrapper(torch.nn.Module):
+    def __init__(self, module: YOLO) -> None:
+        super().__init__()
+        self.m = module
+
+    def forward(self, x):
+        return self.m(x)
+
 
 class Meta:
-    def __init__(self, data, model, epochs, patience, cool_period, target_metrics, best_model, highest_train_epochs, imgsz, optimizer,project):
+    def __init__(self, data, model, epochs, patience, cool_period, target_metrics, best_model, highest_train_epochs,
+                 imgsz, optimizer, project):
         self.data = data
         self.model = model
         self.epochs = epochs
@@ -443,6 +557,8 @@ class Meta:
         self.imgsz = imgsz
         self.optimizer = optimizer
         self.project = project
+
+
 def get_dataloader(folder, size):
     # dataset = datasets.ImageFolder(folder, transforms.ToTensor())
     dataset = datasets.ImageFolder(folder, transforms.Compose([
@@ -451,12 +567,19 @@ def get_dataloader(folder, size):
         transforms.ToTensor()
     ]))
     return torch.utils.data.DataLoader(dataset)
+
+
+
+
+
 if __name__ == '__main__':
     # meta data to be updated as per experiment
-    meta = {"data":"coco.yaml", "model":"runs/detect/train74/weights/best.pt", "epochs":1000,"patience":10,"cool_period":10, "target_metrics":"fitness","best_model":"train46", "highest_train_epochs" : 1000, "imgsz":320,"optimizer":"SGD","project":"Quantization"}
+    meta = {"data": "coco.yaml", "model": "runs/detect/train74/weights/best.pt", "epochs": 1000, "patience": 10,
+            "cool_period": 10, "target_metrics": "fitness", "best_model": "train46", "highest_train_epochs": 1000,
+            "imgsz": 320, "optimizer": "SGD", "project": "Quantization"}
 
     # defining model
-    
+
     meta = Meta(**meta)
     #model.load("runs/detect/train74/weights/best.pt")
 
@@ -464,39 +587,25 @@ if __name__ == '__main__':
     tuner = Tuner(meta)
     tuner.update_best_model_path()
 
-    floatmodel = YOLO(tuner.best_model_path, "detect") #../repo/runs/detect/train46/weights/best.pt
+    floatmodel = YOLO(tuner.best_model_path, "detect")  #../repo/runs/detect/train46/weights/best.pt
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
+    quantModel = YOLO("newyolo_def.yaml", "detect")
 
-
-    quantModel = YOLO("newyolo_def.yaml")
+    #quantModel.load(tuner.best_model_path)
     quantModel.load(tuner.best_model_path)
+    #quantModel.load_state_dict(floatmodel.state_dict(),strict=False)
 
+    # Iterate through the layers to find Conv layers
 
-    dataloader = get_dataloader("ultralytics/images", 320)
-    with torch.no_grad():
-        print("Calibrate:")
-        with calibration_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
-
-        print("Bias Correction:")
-        with bias_correction_mode(quantModel), bias_correction_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
-
-
-    tuner.InitTrain(quantModel,data='coco.yaml',epochs=1000,patience=10,imgsz=320)
+    tuner.InitTrain(quantModel, data='data_1024.yaml', epochs=1000, patience=10, imgsz=320)
 
     #start training
     tuner.StartTrain()
 
     #plot final results
     tuner.plot_res()
-
-
-#sbatch

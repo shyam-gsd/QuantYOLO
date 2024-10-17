@@ -12,7 +12,7 @@ from torch.nn.init import constant_, xavier_uniform_
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, dist2rbox, make_anchors
 
 from .block import DFL, BNContrastiveHead, ContrastiveHead, Proto, QuantDFL
-from .conv import Conv, QuantConv, Int8ActPerTensorPoT, Int8WeightPerChannelPoT
+from .conv import Conv, QuantConv, Int8ActPerTensorPoT, Int8WeightPerChannelPoT, Uint8ActPerTensorPoT
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
@@ -169,6 +169,9 @@ class Detect(nn.Module):
         return torch.cat([boxes, scores.unsqueeze(-1), labels.unsqueeze(-1).to(boxes.dtype)], dim=-1)
 
 
+
+
+
 class NewQuantDetect(nn.Module):
     """YOLOv8 Detect head for detection models."""
     dynamic = False  # force grid reconstruction
@@ -177,9 +180,15 @@ class NewQuantDetect(nn.Module):
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
 
-    def __init__(self, nc=80, ch=()):
+    def __init__(self, nc=80, ch=() ,**kwargs):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
+        self.bit_width = kwargs.get('bit_width', 6)
+        self.weight_quant = kwargs['weight_quant']
+        self.act_quant = globals()[kwargs.get('act_quant', "Uint8ActPerTensorPoT")]
+        self.weight_bit_width = kwargs.get('weight_bit_width', 6)
+        self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
+
         self.nc = nc  # number of classes
         self.nl = len(ch)  # number of detection layers
         self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
@@ -187,15 +196,27 @@ class NewQuantDetect(nn.Module):
         self.stride = torch.zeros(self.nl)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
         self.cv2 = nn.ModuleList(
-            nn.Sequential(QuantConv(x, c2, 3), QuantConv(c2, c2, 3), qnn.QuantConv2d(c2, 4 * self.reg_max, 1)) for x in ch)
-        self.cv3 = nn.ModuleList(nn.Sequential(QuantConv(x, c3, 3), QuantConv(c3, c3, 3), qnn.QuantConv2d(c3, self.nc, 1)) for x in ch)
-        self.dfl = QuantDFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+            nn.Sequential(QuantConv(x, c2, 3,**kwargs), QuantConv(c2, c2, 3,**kwargs), qnn.QuantConv2d(c2, 4 * self.reg_max, 1,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor)) for x in ch)
+        self.cv3 = nn.ModuleList(
+            nn.Sequential(
+                QuantConv(x, c3, 3, weight_quant =self.weight_quant,weight_bit_width= self.weight_bit_width,return_quant_tensor= self.return_quant_tensor),
+                QuantConv(c3, c3, 3,weight_quant = self.weight_quant,weight_bit_width= self.weight_bit_width,return_quant_tensor= self.return_quant_tensor),
+                qnn.QuantConv2d(c3, self.nc, 1,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor)
+            ) for x in ch)
+        self.dfl = QuantDFL(self.reg_max,**kwargs) if self.reg_max > 1 else qnn.QuantIdentity(act_quant=self.act_quant,weight_bit_width=self.bit_width,return_quant_tensor=self.return_quant_tensor)
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
         shape = x[0].shape  # BCHW
         for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            x1 = self.cv2[i](x[i])
+            x2 = self.cv3[i](x[i])
+
+            #x2 = qnn.QuantIdentity(bit_width=18).to(x2.device)(x2)
+            #x1 = qnn.QuantIdentity(bit_width=18).to(x1.device)(x1)
+
+            x[i] = torch.cat((x1, x2), 1)
+
         if self.training or isinstance(x[0], torch.fx.Proxy):
             return x
         # elif isinstance(x[0], torch.fx.Proxy):
@@ -249,7 +270,7 @@ class PostQuantDetect(torch.nn.Module):
         self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.FloatTensor(stride)  # strides computed during build
-        self.dfl = QuantDFL(self.reg_max) if self.reg_max > 1 else qnn.QuantIdentity()
+        self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
@@ -328,8 +349,8 @@ class QuantDetect(nn.Module):
             x1 = self.cv2[i](x[i])
             x2 = self.cv3[i](x[i])
 
-            x2 = qnn.QuantIdentity(bit_width= 18,return_quant_tensor=True).to(x2.device)(x2)
-            x1 = qnn.QuantIdentity(bit_width=18, return_quant_tensor=True).to(x1.device)(x1)
+            #x2 = qnn.QuantIdentity(bit_width= 18).to(x2.device)(x2)
+            #x1 = qnn.QuantIdentity(bit_width=18).to(x1.device)(x1)
 
             x[i] = torch.cat((x1,x2), 1)
         if self.training or isinstance(x[0], torch.fx.Proxy):  # Training path
