@@ -155,6 +155,8 @@ class QuantConv(nn.Module):
         self.act = default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(act_quant=self.act_quant,bit_width=self.bit_width,return_quant_tensor=self.return_quant_tensor)
 
     def forward(self, x):
+
+
         """Apply convolution, batch normalization and activation to input tensor."""
         return self.act(self.bn(self.conv(x)))
 

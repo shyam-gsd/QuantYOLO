@@ -1,17 +1,17 @@
 import sys
-
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
+sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
 from tqdm import tqdm
 
-from graph.quantize import preprocess_for_quantize, align_input_quant
 from graph.quantize_impl import residual_handler
+from graph.quantize import align_input_quant, preprocess_for_quantize
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn import tasks
 from ultralytics.nn.modules import Int8WeightPerChannelPoT, Uint8ActPerTensorPoT, Int8ActPerTensorPoT, PostQuantDetect, \
     QuantUnpackTensors
+import functorch
 
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
 
 from ultralytics import YOLO
 from ultralytics.cfg import get_cfg
@@ -46,6 +46,23 @@ Args:
 '''
 
 
+class QuantizeWrapper(torch.nn.Module):
+    def __init__(self, module: tasks.DetectionModel) -> None:
+        super().__init__()
+        self.m = module
+
+    def forward(self, x):
+        return self.m(x)
+
+
+class DetectWrapperQuantize(torch.nn.Module):
+    def __init__(self, module) -> None:
+        super().__init__()
+        self.m = module
+
+    def forward(self, x1, x2, x3):
+        return self.m([x1, x2, x3])
+
 def has_plateau(arr, window_size=3, tolerance=0.1):
     if len(arr) < 3:  # If the array has fewer than 3 elements, it can't have a plateau
         return False
@@ -78,20 +95,19 @@ class MyModel(tasks.DetectionModel):
     def calibrate(self):
         dataloader = get_dataloader("images", 320)
 
-        quantized = self.model.model[0]
-        quantized_detect = self.model.model[1]
+        quantized = QuantizeWrapper(self)
         with torch.no_grad():
             print("Calibrate:")
-            with calibration_mode(quantized.m), calibration_mode(quantized_detect.m):
+            with calibration_mode(quantized.m):
                 for x, _ in tqdm(dataloader):
-                    x = quantized(x.to(device))
-                    quantized_detect(x)
+                    x = quantized(x)
+
 
             print("Bias Correction:")
-            with bias_correction_mode(quantized.m), bias_correction_mode(quantized_detect.m):
+            with bias_correction_mode(quantized.m):
                 for x, _ in tqdm(dataloader):
-                    x = quantized(x.to(device))
-                    quantized_detect(x)
+                    x = quantized(x)
+
 
     def Quantize(self):
         model_arch = self.model
@@ -100,10 +116,12 @@ class MyModel(tasks.DetectionModel):
         new_layer.i = detect.i
         new_layer.f = detect.f
 
-        print(self.model)
-        quantModel.model = model_arch
-        print(self)
+
+        self.model = model_arch
+
         wrap = QuantizeWrapper(self)
+        detect_wrap = DetectWrapperQuantize(detect)
+
         pre_quant = preprocess_for_quantize(wrap)
         pre_detect = preprocess_for_quantize(detect)
 
@@ -123,16 +141,18 @@ class MyModel(tasks.DetectionModel):
 
 
 def get_model(cfg=None, weights=None, nc=20, verbose=True):
-    if cfg is str:
-        model = MyModel(cfg)
-    else:
-        model = MyModel(cfg["yaml_file"])
+    model = MyModel(cfg,nc=nc,verbose=verbose)
+    # if cfg is str:
+    #     model = MyModel(cfg)
+    # else:
+    #     model = MyModel(cfg["yaml_file"])
     if weights:
         model.load(weights)
     else:
         model.load(torch.load("runs/detect/train92/weights/best.pt", map_location=device))
 
     model.Quantize()
+    model.calibrate()
     return model
 
 
@@ -358,20 +378,28 @@ class Tuner():
 
         self.thread.start()
         print("started")
+
+        self.is_runtime_error_in_train = False
+
+
         self.thread.join()
 
-        if (self.current_exp_epoch_cnt < self.epochs):
+
+
+        if (self.current_exp_epoch_cnt < self.epochs) and not self.is_runtime_error_in_train:
             mutated_hyp = self._mutate()
 
             #self.thread = None
 
             self.model = None
             gc.collect()  # Collect garbage
+            self.update_best_model_path()
             if self.meta.project == "FloatingPointTuning":
-                self.update_best_model_path()
+                self.model = YOLO(self.best_model_path)
             else:
-                self.best_model_path = "newyolo_def.yaml"
-            self.model = YOLO(self.best_model_path)
+                self.model = YOLO("newyolo_def.yaml","detect")
+                self.model.load(self.best_model_path)
+
             self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
             self.model.add_callback("on_model_save", self.onModelSaved)
             self.is_current_hyp_stale = False
@@ -384,12 +412,14 @@ class Tuner():
 
     def trainTask(self):
         try:
-            self.model.train(data=self.data, epochs=self.epochs, lr0=0.00001, save=True, device=[0], cfg=self.hyp_file,
+            self.model.train(data=self.data, epochs=self.epochs, lr0=0.01, save=True, device=[0], cfg=self.hyp_file,
                              trainer=MyTrainer, val=True, imgsz=self.imgsz, optimizer=self.optim,
                              project=self.meta.project)
         except KeyboardInterrupt:
+            self.is_runtime_error_in_train = True
             self.plot_res()
         except Exception as e:
+            self.is_runtime_error_in_train = True
             print("Training was cancelled. " + str(e))
             traceback.print_exc()
 
@@ -534,13 +564,7 @@ identity_map = {
             'act_quant': Uint8ActPerTensorPoT, 'bit_width': 8, 'return_quant_tensor': True})}
 
 
-class QuantizeWrapper(torch.nn.Module):
-    def __init__(self, module: YOLO) -> None:
-        super().__init__()
-        self.m = module
 
-    def forward(self, x):
-        return self.m(x)
 
 
 class Meta:
@@ -608,4 +632,4 @@ if __name__ == '__main__':
     tuner.StartTrain()
 
     #plot final results
-    tuner.plot_res()
+    #tuner.plot_res()

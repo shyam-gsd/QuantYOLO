@@ -212,10 +212,10 @@ class NewQuantDetect(nn.Module):
             x1 = self.cv2[i](x[i])
             x2 = self.cv3[i](x[i])
 
-            #x2 = qnn.QuantIdentity(bit_width=18).to(x2.device)(x2)
-            #x1 = qnn.QuantIdentity(bit_width=18).to(x1.device)(x1)
+            x2 = qnn.QuantIdentity(act_quant=None).to(x2.device)(x2)
+            x1 = qnn.QuantIdentity(act_quant=None).to(x1.device)(x1)
 
-            x[i] = torch.cat((x1, x2), 1)
+            x[i] = QuantTensor.cat((x1, x2), 1)
 
         if self.training or isinstance(x[0], torch.fx.Proxy):
             return x
