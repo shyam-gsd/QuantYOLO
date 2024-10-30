@@ -1,10 +1,20 @@
 import sys
+
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+
+from fx import symbolic_trace
+from graph import TorchFunctionalToModule, DuplicateSharedStatelessModule, ModuleToModuleByClass, \
+    MeanMethodToAdaptiveAvgPool2d, CollapseConsecutiveConcats, MoveSplitBatchNormBeforeCat, MergeBatchNorm, \
+    EqualizeGraph, InsertModuleCallAfter
+from graph.standardize import RemoveStochasticModules
+
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
 from tqdm import tqdm
 
-from graph.quantize_impl import residual_handler
+from graph.quantize_impl import residual_handler, are_inputs_unsigned, recursive_input_handler
 from graph.quantize import align_input_quant, preprocess_for_quantize
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn import tasks
@@ -12,6 +22,7 @@ from ultralytics.nn.modules import Int8WeightPerChannelPoT, Uint8ActPerTensorPoT
     QuantUnpackTensors
 import functorch
 
+from torch.fx.experimental.proxy_tensor import make_fx
 
 from ultralytics import YOLO
 from ultralytics.cfg import get_cfg
@@ -32,9 +43,15 @@ import traceback
 from torchvision import transforms, datasets
 from brevitas.graph.calibrate import bias_correction_mode, calibration_mode
 import gc
+from brevitas.export import export_qonnx
 
 import torch.nn as nn
 import brevitas.nn as qnn
+
+
+
+from qonnx.util.cleanup import cleanup as qonnx_cleanup
+
 
 '''
 Function to Check if the array of numbers has a plateau
@@ -45,23 +62,6 @@ Args:
     tolerance : if the smoothened curve remains in this range for 3 consiquetive times then it is a plateau
 '''
 
-
-class QuantizeWrapper(torch.nn.Module):
-    def __init__(self, module: tasks.DetectionModel) -> None:
-        super().__init__()
-        self.m = module
-
-    def forward(self, x):
-        return self.m(x)
-
-
-class DetectWrapperQuantize(torch.nn.Module):
-    def __init__(self, module) -> None:
-        super().__init__()
-        self.m = module
-
-    def forward(self, x1, x2, x3):
-        return self.m([x1, x2, x3])
 
 def has_plateau(arr, window_size=3, tolerance=0.1):
     if len(arr) < 3:  # If the array has fewer than 3 elements, it can't have a plateau
@@ -86,85 +86,8 @@ class ModelOnPlateau(Exception):
     pass
 
 
-class MyModel(tasks.DetectionModel):
-    def __init__(self, cfg='yolov8n.yaml', ch=3, nc=None, verbose=True):
-        super().__init__(cfg, ch, nc, verbose)
-    # def __init__(self, cfg, mode="detect"):
-    #     super().__init__(cfg, mode)
-
-    def calibrate(self):
-        dataloader = get_dataloader("images", 320)
-
-        quantized = QuantizeWrapper(self)
-        with torch.no_grad():
-            print("Calibrate:")
-            with calibration_mode(quantized.m):
-                for x, _ in tqdm(dataloader):
-                    x = quantized(x)
 
 
-            print("Bias Correction:")
-            with bias_correction_mode(quantized.m):
-                for x, _ in tqdm(dataloader):
-                    x = quantized(x)
-
-
-    def Quantize(self):
-        model_arch = self.model
-        detect = model_arch.pop(len(self.model) - 1)
-        new_layer = torch.nn.Identity()
-        new_layer.i = detect.i
-        new_layer.f = detect.f
-
-
-        self.model = model_arch
-
-        wrap = QuantizeWrapper(self)
-        detect_wrap = DetectWrapperQuantize(detect)
-
-        pre_quant = preprocess_for_quantize(wrap)
-        pre_detect = preprocess_for_quantize(detect)
-
-        quant = residual_handler(pre_quant, identity_map, act_map, unsigned_act, align_input_quant)
-        detect = residual_handler(pre_detect, identity_map, act_map, unsigned_act, align_input_quant)
-
-        post_detect = PostQuantDetect(nc=detect.nc, stride=detect.stride)
-
-        self.model = torch.nn.Sequential(quant, detect, QuantUnpackTensors(), post_detect)
-        for i, m in enumerate(self.model):
-            m.i = i
-            m.f = -1
-        self.save = []
-        self.calibrate()
-
-        return self
-
-
-def get_model(cfg=None, weights=None, nc=20, verbose=True):
-    model = MyModel(cfg,nc=nc,verbose=verbose)
-    # if cfg is str:
-    #     model = MyModel(cfg)
-    # else:
-    #     model = MyModel(cfg["yaml_file"])
-    if weights:
-        model.load(weights)
-    else:
-        model.load(torch.load("runs/detect/train92/weights/best.pt", map_location=device))
-
-    model.Quantize()
-    model.calibrate()
-    return model
-
-
-class MyTrainer(DetectionTrainer):
-    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
-        super().__init__(cfg, overrides, _callbacks)
-
-    def calibrate(self):
-        self.model.calibrate()
-
-    def get_model(self, cfg=None, weights=None, verbose=True):
-        return get_model(cfg, weights, self.data["nc"], verbose and RANK == -1)
 
 class Tuner():
     '''
@@ -324,7 +247,7 @@ class Tuner():
             hyp[k] = round(hyp[k], 5)  # significant digits
 
         # fix batch size make it int
-        hyp["batch"] = 16  #int(hyp["batch"])
+        hyp["batch"] = 64  #int(hyp["batch"])
 
         self.hyp = hyp
 
@@ -381,10 +304,7 @@ class Tuner():
 
         self.is_runtime_error_in_train = False
 
-
         self.thread.join()
-
-
 
         if (self.current_exp_epoch_cnt < self.epochs) and not self.is_runtime_error_in_train:
             mutated_hyp = self._mutate()
@@ -397,7 +317,7 @@ class Tuner():
             if self.meta.project == "FloatingPointTuning":
                 self.model = YOLO(self.best_model_path)
             else:
-                self.model = YOLO("newyolo_def.yaml","detect")
+                self.model = YOLO("newyolo_def.yaml", "detect")
                 self.model.load(self.best_model_path)
 
             self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
@@ -412,8 +332,8 @@ class Tuner():
 
     def trainTask(self):
         try:
-            self.model.train(data=self.data, epochs=self.epochs, lr0=0.01, save=True, device=[0], cfg=self.hyp_file,
-                             trainer=MyTrainer, val=True, imgsz=self.imgsz, optimizer=self.optim,
+            self.model.train(data=self.data, epochs=self.epochs, lr0=0.00001, save=True, device=[0], cfg=self.hyp_file,
+                             val=True, imgsz=self.imgsz, optimizer=self.optim,
                              project=self.meta.project)
         except KeyboardInterrupt:
             self.is_runtime_error_in_train = True
@@ -423,7 +343,15 @@ class Tuner():
             print("Training was cancelled. " + str(e))
             traceback.print_exc()
 
+    '''
+    This callback is used to wait for the model to be saved and then proceed to update the hyperparameters
+    '''
     def onModelSaved(self, trainer):
+        export_model = torch.nn.Sequential(trainer.model)
+
+
+        export_qonnx(export_model, export_path=trainer.wdir, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
+        qonnx_cleanup(trainer.wdir, out_file=trainer.wdir)
         # updates hyperparameters and starts training loop
         if (self.is_current_hyp_stale):
             raise ModelOnPlateau("Model reached a plateau")
@@ -435,6 +363,7 @@ class Tuner():
 
     def onTrainEpochComplete(self, trainer):
         #increment necessary counters
+
         self.epoch_cnt += 1
         self.current_exp_epoch_cnt += 1
 
@@ -525,46 +454,6 @@ class Tuner():
             json.dump(self.meta, json_file, indent=4)
 
 
-ACT_BIT_WIDTH = 6
-WEIGHT_BIT_WIDTH = 6
-compute_map = {
-    nn.Conv2d: (
-        qnn.QuantConv2d,
-        {
-            'weight_quant': Int8WeightPerChannelPoT,
-            'weight_bit_width': WEIGHT_BIT_WIDTH,
-            # 'bias_quant': quant.Int32Bias,
-            'return_quant_tensor': True}),
-    nn.ConvTranspose2d: (
-        qnn.QuantConvTranspose2d,
-        {
-            'weight_quant': Int8WeightPerChannelPoT,
-            'weight_bit_width': WEIGHT_BIT_WIDTH,
-            # 'bias_quant': quant.Int32Bias,
-            'return_quant_tensor': True}),
-    nn.UpsamplingNearest2d: (
-        qnn.QuantUpsamplingNearest2d,
-        {})}
-unsigned_act = (nn.ReLU,)
-act_map = {
-    nn.ReLU: (qnn.QuantReLU, {
-        'act_quant': Uint8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True})}
-identity_map = {
-    'signed':
-        (qnn.QuantIdentity, {
-            'act_quant': Int8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True}),
-    'signed8':
-        (qnn.QuantIdentity, {
-            'act_quant': Int8ActPerTensorPoT, 'bit_width': 8, 'return_quant_tensor': True}),
-    'unsigned':
-        (qnn.QuantIdentity, {
-            'act_quant': Uint8ActPerTensorPoT, 'bit_width': ACT_BIT_WIDTH, 'return_quant_tensor': True}),
-    'unsigned8':
-        (qnn.QuantIdentity, {
-            'act_quant': Uint8ActPerTensorPoT, 'bit_width': 8, 'return_quant_tensor': True})}
-
-
-
 
 
 class Meta:
@@ -593,17 +482,15 @@ def get_dataloader(folder, size):
     return torch.utils.data.DataLoader(dataset)
 
 
-
-
-
 if __name__ == '__main__':
     # meta data to be updated as per experiment
     meta = {"data": "coco.yaml", "model": "runs/detect/train74/weights/best.pt", "epochs": 1000, "patience": 10,
             "cool_period": 10, "target_metrics": "fitness", "best_model": "train46", "highest_train_epochs": 1000,
             "imgsz": 320, "optimizer": "SGD", "project": "Quantization"}
 
-    # defining model
+    #torch.inference_mode = torch.no_grad
 
+    # defining model
     meta = Meta(**meta)
     #model.load("runs/detect/train74/weights/best.pt")
 
@@ -620,8 +507,10 @@ if __name__ == '__main__':
 
     quantModel = YOLO("newyolo_def.yaml", "detect")
 
+
     #quantModel.load(tuner.best_model_path)
     quantModel.load(tuner.best_model_path)
+
     #quantModel.load_state_dict(floatmodel.state_dict(),strict=False)
 
     # Iterate through the layers to find Conv layers

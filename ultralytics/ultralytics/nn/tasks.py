@@ -10,6 +10,7 @@ import torch.nn as nn
 import brevitas.nn as qnn
 from brevitas.nn import QuantConvTranspose2d
 
+
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -324,7 +325,7 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+        if isinstance(m, Detect) or isinstance(m,QuantDetect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
             s = 256  # 2x min stride
             m.inplace = self.inplace
 
@@ -1014,10 +1015,17 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c2 = ch[f[-1]]
         else:
             c2 = ch[f]
-        if m in {QuantConv}:
-            if kwargs["weight_quant"] in globals():
-                kwargs["weight_quant"] = globals()[kwargs["weight_quant"]]
-        m_ = nn.Sequential(*(m(*args, **kwargs) for _ in range(n))) if n > 1 else m(*args, **kwargs)  # module
+        if m in {QuantConv,qnn.QuantIdentity,QuantDetect}:
+            if "weight_quant" in kwargs:
+                if kwargs["weight_quant"] in globals():
+                    kwargs["weight_quant"] = globals()[kwargs["weight_quant"]]
+            if "act_quant" in kwargs:
+                if kwargs["act_quant"] in globals():
+                    kwargs["act_quant"] = globals()[kwargs["act_quant"]]
+        if len(args) == 0:
+            m_ = nn.Sequential(*(m( **kwargs) for _ in range(n))) if n > 1 else m( **kwargs)  # module
+        else:
+            m_ = nn.Sequential(*(m(*args, **kwargs) for _ in range(n))) if n > 1 else m(*args, **kwargs)  # module
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         m.np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type = i, f, t  # attach index, 'from' index, type

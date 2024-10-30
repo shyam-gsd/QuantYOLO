@@ -6,6 +6,7 @@ from typing import NamedTuple, Optional
 
 import torch
 from torch import Tensor
+from torch.fx import Proxy
 
 from brevitas.function.ops import max_int
 from brevitas.function.ops import min_int
@@ -24,7 +25,7 @@ class QuantTensorBase(NamedTuple):
     bit_width: Optional[Tensor]
     signed_t: Optional[Tensor]
     training_t: Optional[Tensor]
-    dtype: None
+
 
 
 def _unpack_quant_tensor(input_data):
@@ -54,21 +55,22 @@ def _is_all_nested_not_none(input_data):
 class QuantTensor(QuantTensorBase):
 
     def __new__(
-            cls, value, scale=None, zero_point=None, bit_width=None, signed=None, training=None,dtype= torch.dtype):
+            cls, value, scale=None, zero_point=None, bit_width=None, signed=None, training=None):
 
-        if scale is not None and not isinstance(scale, torch.Tensor):
+
+        if scale is not None and not isinstance(scale, torch.Tensor) and not isinstance(scale, Proxy):
             scale = torch.tensor(scale, dtype=torch.float)
-        if zero_point is not None and not isinstance(zero_point, torch.Tensor):
+        if zero_point is not None and not isinstance(zero_point, torch.Tensor) and not isinstance(scale, Proxy):
             zero_point = torch.tensor(zero_point, dtype=torch.float)
-        if bit_width is not None and not isinstance(bit_width, torch.Tensor):
+        if bit_width is not None and not isinstance(bit_width, torch.Tensor) and not isinstance(scale, Proxy):
             bit_width = torch.tensor(bit_width, dtype=torch.float)
-        if signed is not None and not isinstance(signed, torch.Tensor):
+        if signed is not None and not isinstance(signed, torch.Tensor) and not isinstance(scale, Proxy):
             signed = torch.tensor(signed, dtype=torch.bool)
-        if training is not None and not isinstance(training, torch.Tensor):
+        if training is not None and not isinstance(training, torch.Tensor) and not isinstance(scale, Proxy):
             training = torch.tensor(training, dtype=torch.bool)
-        dtype = value.dtype
 
-        return super().__new__(cls, value, scale, zero_point, bit_width, signed, training,dtype)
+
+        return super().__new__(cls, value, scale, zero_point, bit_width, signed, training)
 
     @property
     def signed(self):

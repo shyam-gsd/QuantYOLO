@@ -87,7 +87,11 @@ class QuantDFL(nn.Module):
         """Initialize a convolutional layer with a given number of input channels."""
         super().__init__()
         self.bit_width = kwargs.get('bit_width', 6)
-        self.weight_quant = kwargs['weight_quant']
+        if "weight_quant" in kwargs:
+            self.weight_quant = kwargs['weight_quant']
+        else:
+            self.weight_quant = None
+
         self.weight_bit_width = kwargs.get('weight_bit_width', 6)
         self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
         self.conv = qnn.QuantConv2d(c1, 1, 1, bias=False,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor).requires_grad_(False)
@@ -95,6 +99,9 @@ class QuantDFL(nn.Module):
         #x = torch.quantize_per_tensor(c1,scale=0,1, zero_point=0, dtype=torch.quint8)
         self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
         self.c1 = c1
+
+    def toggle_quantize(self, quantize):
+        self.conv.toggle_quantize(quantize)
 
     def forward(self, x):
         """Applies a transformer layer on input tensor 'x' and returns a tensor."""
@@ -235,6 +242,11 @@ class QuantSPPF(nn.Module):
         self.cv1 = QuantConv(c1, c_, 1, 1, **kwargs)
         self.cv2 = QuantConv(c_ * 4, c2, 1, 1, **kwargs)
         self.m = qnn.QuantMaxPool2d(kernel_size=k, stride=1, padding=k // 2, return_quant_tensor=True)
+
+    def toggle_quantize(self, quantize):
+        self.cv1.toggle_quantize(quantize)
+        self.cv2.toggle_quantize(quantize)
+
 
     def forward(self, x):
         """Forward pass through Ghost Convolution block."""

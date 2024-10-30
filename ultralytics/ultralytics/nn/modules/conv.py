@@ -13,6 +13,7 @@ from abc import ABCMeta
 from abc import abstractmethod
 
 import brevitas.nn as qnn
+import functorch
 
 
 __all__ = (
@@ -138,27 +139,36 @@ class QuantConv(nn.Module):
     """Simplified RepConv module with Conv fusing."""
     default_act = qnn.QuantReLU(act_quant=Uint8ActPerTensorPoT,bit_width= 6,return_quant_tensor=True)  # default activation
 
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True ,weight_quant=Int8WeightPerChannelPoT,**kwargs):
-
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True ,weight_quant=None,act_quant=None,**kwargs):
         """Initialize Conv layer with given arguments including activation."""
         super().__init__()
         self.bit_width = kwargs.get('bit_width', 6)
-        self.act_quant = globals()[kwargs.get('act_quant', "Uint8ActPerTensorPoT")]
+        self.act_quant = act_quant
 
         self.weight_quant = weight_quant
         self.weight_bit_width = kwargs.get('weight_bit_width', 6)
         self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
-        self.conv = qnn.QuantConv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False,weight_quant=self.weight_quant, weight_bit_width=self.weight_bit_width, return_quant_tensor=self.return_quant_tensor)
+        self.conv = qnn.QuantConv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor)
         self.bn = nn.BatchNorm2d(c2)
-        default_act = qnn.QuantReLU(act_quant=self.act_quant, bit_width=self.bit_width,
-                                    return_quant_tensor=self.return_quant_tensor)  # default activation
-        self.act = default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(act_quant=self.act_quant,bit_width=self.bit_width,return_quant_tensor=self.return_quant_tensor)
+        default_act = qnn.QuantReLU(act_quant=self.act_quant,bit_width=self.bit_width,return_quant_tensor=self.return_quant_tensor)  # default activation
+        self.act = default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(return_quant_tensor=self.return_quant_tensor,act_quant=self.act_quant,bit_width=self.bit_width,bias_quant=None)
 
     def forward(self, x):
-
-
         """Apply convolution, batch normalization and activation to input tensor."""
+
         return self.act(self.bn(self.conv(x)))
+
+    def toggle_quantize(self, quantize):
+        if quantize:
+            self.conv.weight_quant = self.weight_quant
+            self.conv.weight_bit_width = self.weight_bit_width
+
+            self.act.act_quant = self.act_quant
+            self.act.bit_width = self.bit_width
+
+
+
+
 
     def forward_fuse(self, x):
         """Perform transposed convolution of 2D data."""
@@ -448,6 +458,9 @@ class QuantConcat(nn.Module):
         super().__init__()
         self.d = dimension
 
+    def toggle_quantize(self, quantize):
+        pass
+
     def forward(self, x):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
@@ -641,6 +654,9 @@ class QuantUpsamplingNearest2d(QuantLayerMixin, UpsamplingNearest2d):
     @property
     def requires_export_handler(self):
         return False
+
+    def toggle_quantize(self, quantize):
+        pass
 
     def forward(self, input: Union[Tensor, QuantTensor]):
         x = self.unpack_input(input)

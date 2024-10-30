@@ -6,7 +6,7 @@ act_bit_width: &act_bit_width 6
 weight_bit_width: &weight_bit_width 6
 
 conv_params: &conv_params {weight_quant: Int8WeightPerChannelPoT, weight_bit_width: *weight_bit_width, return_quant_tensor: True, act_quant: Uint8ActPerTensorPoT, bit_width: *act_bit_width}
-
+#conv_params: &conv_params {}
   
 
 # Parameters
@@ -23,7 +23,9 @@ scales: # model compound scaling constants, i.e. 'model=yolov6n.yaml' will call 
 
 # YOLOv6-3.0s backbone
 backbone:
-  # [from, repeats, module, args]
+  # [from, repeats, module, args,kwargs]
+  #- [-1, 1, qnn.QuantIdentity, [],{ return_quant_tensor: False, act_quant: Uint8ActPerTensorPoT, bit_width: *act_bit_width}]  # 0-P1/2
+
   - [-1, 1, QuantConv, [64, 3, 2],*conv_params]  # 0-P1/2
   - [-1, 1, QuantConv, [128, 3, 2],*conv_params]  # 1-P2/4
   - [-1, 6, QuantConv, [128, 3, 1],*conv_params]
@@ -61,7 +63,8 @@ head:
   - [[-1, 10], 1, QuantConcat, [1],{  }]  # cat head P5
   - [-1, 1, QuantConv, [512, 3, 1],*conv_params]
   - [-1, 9, QuantConv, [512, 3, 1],*conv_params]  # 27
-  - [[19, 23, 27], 1, NewQuantDetect, [nc],*conv_params]  # Detect(P3, P4, P5)
+  - [[19, 23, 27], 1, QuantDetect, [nc],*conv_params]  # Detect(P3, P4, P5)
+  #- [-1, 1, qnn.QuantIdentity, [],{ return_quant_tensor: True, act_quant: Int8ActPerTensorPoT, bit_width: *act_bit_width}]  # 0-P1/2
 #  - [-1,1, QuantUnpackTensors, [0],{}]  # 28
 #  - [-1,1, PostQuantDetect, [nc],{}]  # 29
   # - [[4], 1, Detect, [nc]]  # Detect(P3, P4, P5)
