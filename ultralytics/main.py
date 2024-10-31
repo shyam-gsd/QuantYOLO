@@ -3,19 +3,19 @@ import sys
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
-from fx import symbolic_trace
-from graph import TorchFunctionalToModule, DuplicateSharedStatelessModule, ModuleToModuleByClass, \
+from torch.fx import symbolic_trace
+from brevitas.graph import TorchFunctionalToModule, DuplicateSharedStatelessModule, ModuleToModuleByClass, \
     MeanMethodToAdaptiveAvgPool2d, CollapseConsecutiveConcats, MoveSplitBatchNormBeforeCat, MergeBatchNorm, \
     EqualizeGraph, InsertModuleCallAfter
-from graph.standardize import RemoveStochasticModules
+from brevitas.graph.standardize import RemoveStochasticModules
 
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
 from tqdm import tqdm
 
-from graph.quantize_impl import residual_handler, are_inputs_unsigned, recursive_input_handler
-from graph.quantize import align_input_quant, preprocess_for_quantize
+from brevitas.graph.quantize_impl import residual_handler, are_inputs_unsigned, recursive_input_handler
+from brevitas.graph.quantize import align_input_quant, preprocess_for_quantize
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn import tasks
 from ultralytics.nn.modules import Int8WeightPerChannelPoT, Uint8ActPerTensorPoT, Int8ActPerTensorPoT, PostQuantDetect, \
@@ -43,15 +43,13 @@ import traceback
 from torchvision import transforms, datasets
 from brevitas.graph.calibrate import bias_correction_mode, calibration_mode
 import gc
+
 from brevitas.export import export_qonnx
 
 import torch.nn as nn
 import brevitas.nn as qnn
 
-
-
 from qonnx.util.cleanup import cleanup as qonnx_cleanup
-
 
 '''
 Function to Check if the array of numbers has a plateau
@@ -350,8 +348,8 @@ class Tuner():
         export_model = torch.nn.Sequential(trainer.model)
 
 
-        export_qonnx(export_model, export_path=trainer.wdir, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
-        qonnx_cleanup(trainer.wdir, out_file=trainer.wdir)
+        #export_qonnx(trainer.model, export_path=trainer.wdir, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
+        #qonnx_cleanup(trainer.wdir, out_file=trainer.wdir)
         # updates hyperparameters and starts training loop
         if (self.is_current_hyp_stale):
             raise ModelOnPlateau("Model reached a plateau")
@@ -513,7 +511,22 @@ if __name__ == '__main__':
 
     #quantModel.load_state_dict(floatmodel.state_dict(),strict=False)
 
-    # Iterate through the layers to find Conv layers
+
+
+    dataloader = get_dataloader("images", 320)
+    quantModel.to(device)
+
+    with torch.no_grad():
+        print("Calibrate:")
+        with calibration_mode(quantModel):
+            for x, _ in tqdm(dataloader):
+                x = quantModel(x.to(device))
+
+        print("Bias Correction:")
+        with bias_correction_mode(quantModel):
+            for x, _ in tqdm(dataloader):
+                x = quantModel(x.to(device))
+
 
     tuner.InitTrain(quantModel, data='data_1024.yaml', epochs=1000, patience=10, imgsz=320)
 

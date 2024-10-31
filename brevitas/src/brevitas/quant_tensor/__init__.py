@@ -25,6 +25,7 @@ class QuantTensorBase(NamedTuple):
     bit_width: Optional[Tensor]
     signed_t: Optional[Tensor]
     training_t: Optional[Tensor]
+    dtype: Optional[torch.dtype] = None
 
 
 
@@ -55,7 +56,7 @@ def _is_all_nested_not_none(input_data):
 class QuantTensor(QuantTensorBase):
 
     def __new__(
-            cls, value, scale=None, zero_point=None, bit_width=None, signed=None, training=None):
+            cls, value, scale=None, zero_point=None, bit_width=None, signed=None, training=None,dtype=None):
 
 
         if scale is not None and not isinstance(scale, torch.Tensor) and not isinstance(scale, Proxy):
@@ -68,9 +69,11 @@ class QuantTensor(QuantTensorBase):
             signed = torch.tensor(signed, dtype=torch.bool)
         if training is not None and not isinstance(training, torch.Tensor) and not isinstance(scale, Proxy):
             training = torch.tensor(training, dtype=torch.bool)
+        if value is not None and isinstance(value, torch.Tensor) and isinstance(value, Proxy):
+            dtype = value.dtype
 
 
-        return super().__new__(cls, value, scale, zero_point, bit_width, signed, training)
+        return super().__new__(cls, value, scale, zero_point, bit_width, signed, training,dtype)
 
     @property
     def signed(self):
