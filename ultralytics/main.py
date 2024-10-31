@@ -1,5 +1,6 @@
 import sys
 
+
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
@@ -11,7 +12,7 @@ from brevitas.graph.standardize import RemoveStochasticModules
 
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
 sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src/brevitas')
+
 from tqdm import tqdm
 
 from brevitas.graph.quantize_impl import residual_handler, are_inputs_unsigned, recursive_input_handler
