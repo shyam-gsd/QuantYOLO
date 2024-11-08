@@ -344,15 +344,10 @@ class QuantDetect(nn.Module):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
         self.bit_width = kwargs.get('bit_width', 6)
-        if 'weight_quant' in kwargs:
-            self.weight_quant = weight_quant
-        else:
-            self.weight_quant = None
+        self.weight_quant = weight_quant
+        self.act_quant = act_quant
 
-        if "act_quant" in kwargs:
-            self.act_quant = act_quant
-        else:
-            self.act_quant = None
+
         self.weight_bit_width = kwargs.get('weight_bit_width', 6)
         self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
 
@@ -363,17 +358,18 @@ class QuantDetect(nn.Module):
         self.stride = torch.zeros(self.nl)  # strides computed during build
         #self.stride = torch.FloatTensor(stride)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
+        print(act_quant)
+        print(weight_quant)
+
         self.cv2 = nn.ModuleList(
-            nn.Sequential(QuantConv(x, c2, 3, **kwargs), QuantConv(c2, c2, 3, **kwargs),
+            nn.Sequential(QuantConv(x, c2, 3,weight_quant=self.weight_quant,act_quant=self.act_quant, **kwargs), QuantConv(c2, c2, 3,weight_quant=self.weight_quant,act_quant=self.act_quant, **kwargs),
                           qnn.QuantConv2d(c2, 4 * self.reg_max, 1, weight_quant=self.weight_quant,
                                           weight_bit_width=self.weight_bit_width,
                                           return_quant_tensor=self.return_quant_tensor)) for x in ch)
         self.cv3 = nn.ModuleList(
             nn.Sequential(
-                QuantConv(x, c3, 3, weight_quant=self.weight_quant, weight_bit_width=self.weight_bit_width,
-                          return_quant_tensor=self.return_quant_tensor),
-                QuantConv(c3, c3, 3, weight_quant=self.weight_quant, weight_bit_width=self.weight_bit_width,
-                          return_quant_tensor=self.return_quant_tensor),
+                QuantConv(x, c3, 3,weight_quant=self.weight_quant,act_quant=self.act_quant, **kwargs),
+                QuantConv(c3, c3, 3,weight_quant=self.weight_quant,act_quant=self.act_quant, **kwargs),
                 qnn.QuantConv2d(c3, self.nc, 1, weight_quant=self.weight_quant, weight_bit_width=self.weight_bit_width,
                                 return_quant_tensor=self.return_quant_tensor)
             ) for x in ch)
@@ -389,7 +385,8 @@ class QuantDetect(nn.Module):
 
 
         for i in range(self.nl):
-            x[i] = QuantTensor.cat((self.cv2[i](x[i]),self.cv3[i](x[i])), 1)
+
+            x[i] = torch.cat((self.NoneIdentity(self.cv2[i](x[i])),self.NoneIdentity(self.cv3[i](x[i]))), 1)
 
         if self.training:  # Training path
             return x

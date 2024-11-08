@@ -10,8 +10,8 @@ from brevitas.graph import TorchFunctionalToModule, DuplicateSharedStatelessModu
     EqualizeGraph, InsertModuleCallAfter
 from brevitas.graph.standardize import RemoveStochasticModules
 
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/ultralytics/ultralytics')
-sys.path.append('/clusterhome/clusteruser11/QuantYOLO/brevitas/src')
+sys.path.append('/home/QuantYOLO/ultralytics/ultralytics')
+sys.path.append('/home/QuantYOLO/brevitas/src')
 
 from tqdm import tqdm
 
@@ -271,6 +271,7 @@ class Tuner():
         self.imgsz = imgsz
         self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
         self.model.add_callback("on_model_save", self.onModelSaved)
+        self.model.add_callback("on_val_end", self.on_val_end)
         self.optim = optim
 
         self.epoch_cnt = 0
@@ -321,6 +322,7 @@ class Tuner():
 
             self.model.add_callback("on_train_epoch_end", self.onTrainEpochComplete)
             self.model.add_callback("on_model_save", self.onModelSaved)
+            self.model.add_callback("on_val_end", self.on_val_end)
             self.is_current_hyp_stale = False
             self.StartTrain()
         #model.train(data=data,epochs=epochs, plots=True, save=True, cfg=self.hyp_file,val=True, resume=True)
@@ -342,15 +344,20 @@ class Tuner():
             print("Training was cancelled. " + str(e))
             traceback.print_exc()
 
+
+    def on_val_end(self, validator):
+        print(validator)
+
+
     '''
     This callback is used to wait for the model to be saved and then proceed to update the hyperparameters
     '''
     def onModelSaved(self, trainer):
         export_model = torch.nn.Sequential(trainer.model)
 
-
-        #export_qonnx(trainer.model, export_path=trainer.wdir, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
-        #qonnx_cleanup(trainer.wdir, out_file=trainer.wdir)
+        out_file = str(trainer.wdir) + "/quantized_yolo.onnx"
+        export_qonnx(trainer.model, export_path=out_file, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
+        qonnx_cleanup(out_file, out_file=out_file)
         # updates hyperparameters and starts training loop
         if (self.is_current_hyp_stale):
             raise ModelOnPlateau("Model reached a plateau")
@@ -362,6 +369,7 @@ class Tuner():
 
     def onTrainEpochComplete(self, trainer):
         #increment necessary counters
+        print(f"{trainer.start_epoch} - {self.epoch_cnt} - {self.current_exp_epoch_cnt}")
 
         self.epoch_cnt += 1
         self.current_exp_epoch_cnt += 1

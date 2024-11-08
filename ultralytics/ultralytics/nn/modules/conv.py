@@ -148,10 +148,12 @@ class QuantConv(nn.Module):
         self.weight_quant = weight_quant
         self.weight_bit_width = kwargs.get('weight_bit_width', 6)
         self.return_quant_tensor = kwargs.get('return_quant_tensor', True)
+
         self.conv = qnn.QuantConv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False,weight_quant=self.weight_quant,weight_bit_width=self.weight_bit_width,return_quant_tensor=self.return_quant_tensor)
         self.bn = nn.BatchNorm2d(c2)
         default_act = qnn.QuantReLU(act_quant=self.act_quant,bit_width=self.bit_width,return_quant_tensor=self.return_quant_tensor)  # default activation
-        self.act = default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(return_quant_tensor=self.return_quant_tensor,act_quant=self.act_quant,bit_width=self.bit_width,bias_quant=None)
+        self.act = default_act if act is True else act if isinstance(act, nn.Module) else qnn.QuantIdentity(return_quant_tensor=self.return_quant_tensor,act_quant=self.act_quant,bit_width=self.bit_width)
+
 
     def forward(self, x):
         """Apply convolution, batch normalization and activation to input tensor."""
