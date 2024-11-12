@@ -1,5 +1,5 @@
 import sys
-
+from copy import deepcopy
 
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
@@ -353,10 +353,13 @@ class Tuner():
     This callback is used to wait for the model to be saved and then proceed to update the hyperparameters
     '''
     def onModelSaved(self, trainer):
-        export_model = torch.nn.Sequential(trainer.model)
+        model = deepcopy(trainer.model)
+        model.fuse()
+        #model.model.eval().to(device)
+        export_model = torch.nn.Sequential(model)
 
         out_file = str(trainer.wdir) + "/quantized_yolo.onnx"
-        export_qonnx(trainer.model, export_path=out_file, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
+        export_qonnx(export_model, export_path=out_file, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
         qonnx_cleanup(out_file, out_file=out_file)
         # updates hyperparameters and starts training loop
         if (self.is_current_hyp_stale):
@@ -513,6 +516,7 @@ if __name__ == '__main__':
         device = torch.device("cpu")
 
     quantModel = YOLO("newyolo_def.yaml", "detect")
+
 
 
     #quantModel.load(tuner.best_model_path)
