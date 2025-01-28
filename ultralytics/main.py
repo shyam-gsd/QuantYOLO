@@ -294,6 +294,7 @@ class Tuner():
     '''
 
     def StartTrain(self):
+        print(self.model)
         print("starting ")
         self.current_exp_epoch_cnt = 0
         del self.thread
@@ -353,12 +354,14 @@ class Tuner():
     This callback is used to wait for the model to be saved and then proceed to update the hyperparameters
     '''
     def onModelSaved(self, trainer):
-        model = deepcopy(trainer.model)
+        model = trainer.model
         model.fuse()
-        #model.model.eval().to(device)
+
+        model.model.eval().to(device)
         export_model = torch.nn.Sequential(model)
 
         out_file = str(trainer.wdir) + "/quantized_yolo.onnx"
+
         export_qonnx(export_model, export_path=out_file, args=torch.rand((1, 3, self.imgsz, self.imgsz), device=device))
         qonnx_cleanup(out_file, out_file=out_file)
         # updates hyperparameters and starts training loop
@@ -529,16 +532,16 @@ if __name__ == '__main__':
     dataloader = get_dataloader("images", 320)
     quantModel.to(device)
 
-    with torch.no_grad():
-        print("Calibrate:")
-        with calibration_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
-
-        print("Bias Correction:")
-        with bias_correction_mode(quantModel):
-            for x, _ in tqdm(dataloader):
-                x = quantModel(x.to(device))
+    # with torch.no_grad():
+    #     print("Calibrate:")
+    #     with calibration_mode(quantModel):
+    #         for x, _ in tqdm(dataloader):
+    #             x = quantModel(x.to(device))
+    #
+    #     print("Bias Correction:")
+    #     with bias_correction_mode(quantModel):
+    #         for x, _ in tqdm(dataloader):
+    #             x = quantModel(x.to(device))
 
 
     tuner.InitTrain(quantModel, data='data_1024.yaml', epochs=1000, patience=10, imgsz=320)

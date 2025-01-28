@@ -41,14 +41,14 @@ backbone:
 # YOLOv6-3.0s head
 head:
   - [-1, 1, QuantConv, [256, 1, 1],*conv_params]
-  - [-1, 1, QuantUpsamplingNearest2d, [None, 2],*conv_params] # - [-1, 1, Conv, [256, 1, 1]]
+  - [-1, 1, QuantUpsamplingNearest2d, [None, 2],{return_quant_tensor: True}] # - [-1, 1, Conv, [256, 1, 1]]
   #- [-1, 1, QuantConvTranspose, [256, 2, 2, 0]]
   - [[-1, 6], 1, QuantConcat, [1],{}]  # cat backbone P4
   - [-1, 1, QuantConv, [256, 3, 1],*conv_params]
   - [-1, 9, QuantConv, [256, 3, 1],*conv_params]  # 14
 
   - [-1, 1, QuantConv, [128, 1, 1],*conv_params]
-  - [-1, 1, QuantUpsamplingNearest2d, [None, 2],*conv_params] # - [-1, 1, Conv, [256, 1, 1]]
+  - [-1, 1, QuantUpsamplingNearest2d, [None, 2],{return_quant_tensor: True}] # - [-1, 1, Conv, [256, 1, 1]]
   #- [-1, 1, QuantConvTranspose, [128, 2, 2, 0]]
   - [[-1, 4], 1, QuantConcat, [1],{  }]  # cat backbone P3
   - [-1, 1, QuantConv, [128, 3, 1],*conv_params]

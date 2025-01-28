@@ -64,7 +64,7 @@ class DFL(nn.Module):
     def __init__(self, c1=16):
         """Initialize a convolutional layer with a given number of input channels."""
         super().__init__()
-        self.conv = nn.Conv2d(c1, 1, 1, bias=False).requires_grad_(False)
+        self.conv = nn.Conv2d(c1, 1, 1, bias=False).requires_grad_(True)
         x = torch.arange(c1, dtype=torch.float)
         self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
         self.c1 = c1
@@ -106,7 +106,9 @@ class QuantDFL(nn.Module):
     def forward(self, x):
         """Applies a transformer layer on input tensor 'x' and returns a tensor."""
         b, _, a = x.shape  # batch, channels, anchors
-        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
+        x = x.view(b, 4, self.c1, a).transpose(2, 1)
+        x = x.softmax(1)
+        return self.conv(x).view(b, 4, a)
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
 
 
@@ -241,7 +243,8 @@ class QuantSPPF(nn.Module):
         c_ = c1 // 2  # hidden channels
         self.cv1 = QuantConv(c1, c_, 1, 1, **kwargs)
         self.cv2 = QuantConv(c_ * 4, c2, 1, 1, **kwargs)
-        self.m = qnn.QuantMaxPool2d(kernel_size=k, stride=1, padding=k // 2, return_quant_tensor=True)
+
+        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
 
     def toggle_quantize(self, quantize):
         self.cv1.toggle_quantize(quantize)
